@@ -2,11 +2,18 @@ package org.sp.service;
 
 import org.sp.model.PriceRecord;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 final class Producer {
     private final Store store;
+    private static final int CHUNK_SIZE = 1000;
+    private static final ExecutorService UPLOAD_EXECUTOR = Executors.newFixedThreadPool(8);
 
     public Producer(Store store) {
         this.store = store;
@@ -24,8 +31,25 @@ final class Producer {
         if (batch == null) {
             return;
         }
-        // Batch handles its own concurrency and latest-asOf per id.
-        batch.addRecords(records);
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        if (records.size() <= CHUNK_SIZE) {
+            // Batch handles its own concurrency and latest-asOf per id.
+            batch.addRecords(records);
+            return;
+        }
+        List<PriceRecord> list = new ArrayList<>(records);
+        int total = list.size();
+        int chunks = (total + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        CompletableFuture<?>[] futures = new CompletableFuture<?>[chunks];
+        int index = 0;
+        for (int start = 0; start < total; start += CHUNK_SIZE) {
+            int end = Math.min(start + CHUNK_SIZE, total);
+            List<PriceRecord> slice = list.subList(start, end);
+            futures[index++] = CompletableFuture.runAsync(() -> batch.addRecords(slice), UPLOAD_EXECUTOR);
+        }
+        CompletableFuture.allOf(futures).join();
     }
 
     // this will first update the batchState to Completed and then commit the batch
